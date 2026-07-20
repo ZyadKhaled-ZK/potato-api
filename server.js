@@ -1,4 +1,6 @@
 const express = require('express');
+const swaggerUi = require('swagger-ui-express');
+const openapiDoc = require('./openapi.json');
 const app = express();
 app.use(express.json());
 
@@ -10,6 +12,8 @@ const tasks = [
   { id: 2, title: 'Build REST API', done: false },
   { id: 3, title: 'Write tests', done: false },
 ];
+
+app.use('/docs', swaggerUi.serve, swaggerUi.setup(openapiDoc));
 
 app.get('/', (req, res) => {
   res.json({
