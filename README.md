@@ -114,6 +114,8 @@ http://localhost:3000/docs
 
 You can test every endpoint directly from the browser using the **Try it out** button.
 
+![Swagger UI](./Screenshot_20.png)
+
 ## Project Structure
 
 ```
