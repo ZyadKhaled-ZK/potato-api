@@ -2,6 +2,7 @@ const express = require('express');
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsdoc = require('swagger-jsdoc');
 const pkg = require('./package.json');
+const db = require('./db');
 
 const app = express();
 app.use(express.json());
@@ -12,7 +13,7 @@ const swaggerSpec = swaggerJsdoc({
     info: {
       title: pkg.name,
       version: pkg.version,
-      description: 'A simple RESTful Tasks API built with Node.js and Express.',
+      description: 'A simple RESTful Tasks API built with Node.js, Express, and SQLite.',
     },
     servers: [{ url: 'http://localhost:3000' }],
   },
@@ -21,18 +22,25 @@ const swaggerSpec = swaggerJsdoc({
 
 app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
-let nextId = 4;
-const tasks = [
-  { id: 1, title: 'Install tools', done: true },
-  { id: 2, title: 'Build REST API', done: false },
-  { id: 3, title: 'Write tests', done: false },
-];
+const stmts = {
+  all: db.prepare('SELECT * FROM tasks ORDER BY id'),
+  byId: db.prepare('SELECT * FROM tasks WHERE id = ?'),
+  insert: db.prepare('INSERT INTO tasks (title, done) VALUES (?, ?)'),
+  update: db.prepare('UPDATE tasks SET title = ?, done = ? WHERE id = ?'),
+  delete: db.prepare('DELETE FROM tasks WHERE id = ?'),
+  count: db.prepare('SELECT COUNT(*) AS n FROM tasks'),
+  countDone: db.prepare('SELECT COUNT(*) AS n FROM tasks WHERE done = 1'),
+  reset: db.prepare('DELETE FROM tasks'),
+  seed: db.prepare('INSERT INTO tasks (title, done) VALUES (?, ?)'),
+};
 
-const defaultTasks = [
-  { id: 1, title: 'Install tools', done: true },
-  { id: 2, title: 'Build REST API', done: false },
-  { id: 3, title: 'Write tests', done: false },
-];
+function toBool(task) {
+  return task ? { ...task, done: !!task.done } : null;
+}
+
+function toBoolAll(tasks) {
+  return tasks.map(toBool);
+}
 
 /**
  * @openapi
@@ -71,7 +79,7 @@ app.get('/health', (req, res) => {
  * /tasks:
  *   get:
  *     summary: List tasks
- *     description: Returns all tasks, optionally filtered and paginated.
+ *     description: Returns tasks, optionally filtered and paginated.
  *     parameters:
  *       - in: query
  *         name: done
@@ -82,7 +90,7 @@ app.get('/health', (req, res) => {
  *         name: search
  *         schema:
  *           type: string
- *         description: Search tasks by title
+ *         description: Search tasks by title (SQL LIKE)
  *       - in: query
  *         name: limit
  *         schema:
@@ -98,20 +106,26 @@ app.get('/health', (req, res) => {
  *         description: List of tasks with pagination info
  */
 app.get('/tasks', (req, res) => {
-  let result = tasks;
+  let where = [];
+  let params = [];
+
   if (req.query.done !== undefined) {
-    const done = req.query.done === 'true';
-    result = result.filter((t) => t.done === done);
+    where.push('done = ?');
+    params.push(req.query.done === 'true' ? 1 : 0);
   }
   if (req.query.search) {
-    const q = req.query.search.toLowerCase();
-    result = result.filter((t) => t.title.toLowerCase().includes(q));
+    where.push('title LIKE ?');
+    params.push(`%${req.query.search}%`);
   }
-  const total = result.length;
-  const limit = req.query.limit ? Number(req.query.limit) : result.length;
+
+  const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const total = db.prepare(`SELECT COUNT(*) AS n FROM tasks ${whereClause}`).get(...params).n;
+
+  const limit = req.query.limit ? Number(req.query.limit) : total;
   const offset = req.query.offset ? Number(req.query.offset) : 0;
-  result = result.slice(offset, offset + limit);
-  res.json({ total, count: result.length, offset, limit, tasks: result });
+  const tasks = db.prepare(`SELECT * FROM tasks ${whereClause} ORDER BY id LIMIT ? OFFSET ?`).all(...params, limit, offset);
+
+  res.json({ total, count: tasks.length, offset, limit, tasks: toBoolAll(tasks) });
 });
 
 /**
@@ -133,9 +147,9 @@ app.get('/tasks', (req, res) => {
  *         description: Task not found
  */
 app.get('/tasks/:id', (req, res) => {
-  const task = tasks.find((t) => t.id === Number(req.params.id));
+  const task = stmts.byId.get(Number(req.params.id));
   if (!task) return res.status(404).json({ error: 'Task not found' });
-  res.json(task);
+  res.json(toBool(task));
 });
 
 /**
@@ -166,9 +180,9 @@ app.post('/tasks', (req, res) => {
   if (!title || !title.trim()) {
     return res.status(400).json({ error: 'Title is required' });
   }
-  const task = { id: nextId++, title: title.trim(), done: false };
-  tasks.push(task);
-  res.status(201).json(task);
+  const result = stmts.insert.run(title.trim(), 0);
+  const task = stmts.byId.get(result.lastInsertRowid);
+  res.status(201).json(toBool(task));
 });
 
 /**
@@ -203,15 +217,16 @@ app.post('/tasks', (req, res) => {
  *         description: Task not found
  */
 app.put('/tasks/:id', (req, res) => {
-  const task = tasks.find((t) => t.id === Number(req.params.id));
-  if (!task) return res.status(404).json({ error: 'Task not found' });
+  const existing = stmts.byId.get(Number(req.params.id));
+  if (!existing) return res.status(404).json({ error: 'Task not found' });
   const { title, done } = req.body;
   if (title !== undefined && (!title || !title.trim())) {
     return res.status(400).json({ error: 'Title cannot be empty' });
   }
-  if (title !== undefined) task.title = title.trim();
-  if (done !== undefined) task.done = done;
-  res.json(task);
+  const newTitle = title !== undefined ? title.trim() : existing.title;
+  const newDone = done !== undefined ? (done ? 1 : 0) : existing.done;
+  stmts.update.run(newTitle, newDone, existing.id);
+  res.json(toBool(stmts.byId.get(existing.id)));
 });
 
 /**
@@ -233,9 +248,9 @@ app.put('/tasks/:id', (req, res) => {
  *         description: Task not found
  */
 app.delete('/tasks/:id', (req, res) => {
-  const index = tasks.findIndex((t) => t.id === Number(req.params.id));
-  if (index === -1) return res.status(404).json({ error: 'Task not found' });
-  tasks.splice(index, 1);
+  const existing = stmts.byId.get(Number(req.params.id));
+  if (!existing) return res.status(404).json({ error: 'Task not found' });
+  stmts.delete.run(existing.id);
   res.status(204).end();
 });
 
@@ -244,17 +259,15 @@ app.delete('/tasks/:id', (req, res) => {
  * /stats:
  *   get:
  *     summary: Task stats
- *     description: Returns counts of total, done, and pending tasks.
+ *     description: Returns counts of total, done, and pending tasks using SQL COUNT.
  *     responses:
  *       200:
  *         description: Task statistics
  */
 app.get('/stats', (req, res) => {
-  res.json({
-    total: tasks.length,
-    done: tasks.filter((t) => t.done).length,
-    pending: tasks.filter((t) => !t.done).length,
-  });
+  const total = stmts.count.get().n;
+  const done = stmts.countDone.get().n;
+  res.json({ total, done, pending: total - done });
 });
 
 /**
@@ -262,16 +275,21 @@ app.get('/stats', (req, res) => {
  * /reset:
  *   post:
  *     summary: Reset tasks
- *     description: Restores the 3 example tasks. Handy for demos.
+ *     description: Deletes all tasks and re-seeds the 3 example tasks.
  *     responses:
  *       200:
  *         description: Tasks reset to defaults
  */
 app.post('/reset', (req, res) => {
-  tasks.length = 0;
-  tasks.push(...defaultTasks.map((t) => ({ ...t })));
-  nextId = 4;
-  res.json({ message: 'Tasks reset to defaults', tasks });
+  const resetAll = db.transaction(() => {
+    stmts.reset.run();
+    stmts.seed.run('Install tools', 1);
+    stmts.seed.run('Build REST API', 0);
+    stmts.seed.run('Write tests', 0);
+  });
+  resetAll();
+  const tasks = stmts.all.all();
+  res.json({ message: 'Tasks reset to defaults', tasks: toBoolAll(tasks) });
 });
 
 app.listen(3000, () => {
