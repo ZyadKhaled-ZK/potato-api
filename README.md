@@ -1,11 +1,14 @@
 # Potato API
 
-A simple RESTful API for task management built with Node.js and Express.
+A simple RESTful API for task management built with Node.js, Express, and SQLite.
 
-Built for the FlyRank Internship — Backend Track — Week 2 — Assignment A1.
+Built for the FlyRank Internship — Backend Track — Week 3 — Assignment A2.
 
-Data lives only in memory: restart the server and it resets to 3 example tasks.
-Persistence (a real database) is next week's lesson.
+Data persists in a SQLite database (`tasks.db`). Restart the server — your tasks are still there.
+
+## Why SQLite?
+
+SQLite is a serverless, zero-config database that lives in a single file. No installation, no running process, no configuration. It's perfect for small projects and learning — your entire database is just `tasks.db`. Real applications often start with SQLite and graduate to Postgres when they need concurrent writes.
 
 ## Quick Start
 
@@ -22,6 +25,8 @@ node server.js
 ```
 
 The server runs at `http://localhost:3000`. Open `http://localhost:3000/docs` for Swagger UI.
+
+The database file `tasks.db` is created automatically on first run with 3 seeded tasks.
 
 ## Prerequisites
 
@@ -55,7 +60,7 @@ curl -i http://localhost:3000/tasks
 HTTP/1.1 200 OK
 Content-Type: application/json
 
-[{"id":1,"title":"Install tools","done":true},{"id":2,"title":"Build REST API","done":false},{"id":3,"title":"Write tests","done":false}]
+{"total":3,"count":3,"offset":0,"limit":3,"tasks":[{"id":1,"title":"Install tools","done":true},{"id":2,"title":"Build REST API","done":false},{"id":3,"title":"Write tests","done":false}]}
 ```
 
 ### Get a single task
@@ -149,10 +154,55 @@ curl -i "http://localhost:3000/tasks?limit=2&offset=1"
 HTTP/1.1 200 OK
 Content-Type: application/json
 
-[{"id":2,"title":"Build REST API","done":false},{"id":3,"title":"Write tests","done":false}]
+{"total":3,"count":2,"offset":1,"limit":2,"tasks":[{"id":2,"title":"Build REST API","done":false},{"id":3,"title":"Write tests","done":false}]}
 ```
 
 Real APIs never return everything by default — pagination prevents overloading the client with massive datasets.
+
+## Persistence Proof
+
+1. Create a task: `POST /tasks {"title":"Survives restart"}`
+2. Restart the server (`Ctrl+C` then `node server.js`)
+3. `GET /tasks` — the task is still there
+
+This is the key difference from Week 2. Data now lives in `tasks.db` on disk, not in a JavaScript variable in memory.
+
+## The Database
+
+`tasks.db` is a SQLite database with one table:
+
+```sql
+CREATE TABLE tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  done INTEGER NOT NULL DEFAULT 0
+);
+```
+
+The file is created automatically on first run and is git-ignored so each clone starts fresh with 3 seeded tasks.
+
+### Example SQL Queries (run in DB Browser)
+
+```sql
+-- List every task
+SELECT * FROM tasks;
+
+-- Only completed tasks
+SELECT * FROM tasks WHERE done = 1;
+
+-- How many tasks?
+SELECT COUNT(*) FROM tasks;
+
+-- Search by title
+SELECT * FROM tasks WHERE title LIKE '%milk%';
+
+-- Mark every task as done
+UPDATE tasks SET done = 1;
+```
+
+After running `UPDATE tasks SET done = 1` in DB Browser, call `GET /tasks` from the API — the change appears instantly. There is no "syncing"; both tools read the same `tasks.db` file.
+
+![DB Browser](./Screenshot_1.png)
 
 ## Swagger UI
 
@@ -166,16 +216,26 @@ You can test every endpoint directly from the browser using the **Try it out** b
 
 ![Swagger UI](./Screenshot_20.png)
 
-## The Mortality Experiment
+## API Did Not Change
 
-Create a few tasks, restart the server (`Ctrl+C`, run `node server.js` again), then
-`GET /tasks`. The list is back to the 3 default tasks — everything you added is gone.
-That's because tasks live in a plain JavaScript array in memory, not on disk. The server
-process holding that array is the only place the data ever existed; killing the process
-kills the data with it. This is exactly why Week 3 introduces a real database: something
-that survives a restart.
+The same A1 curl tests pass against the SQLite version:
 
-## AI vs Me
+```bash
+curl -i http://localhost:3000/tasks          # 200 + three tasks
+curl -i http://localhost:3000/tasks/1        # 200 + one task
+curl -i http://localhost:3000/tasks/99       # 404
+curl -i -X POST http://localhost:3000/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Test"}'                      # 201
+curl -i -X POST http://localhost:3000/tasks \
+  -H "Content-Type: application/json" \
+  -d '{}'                                    # 400
+curl -i -X DELETE http://localhost:3000/tasks/1  # 204
+```
+
+Identical tests passing is the proof that storage is "just an implementation detail" — the API is the promise, the database is where the promise is kept.
+
+## AI vs Me (Week 2)
 
 ### My Prompt
 
@@ -212,9 +272,12 @@ Added explicit requirements for pagination, error response format, and status co
 ```
 potato-api/
   server.js        # Express app with all routes + swagger-jsdoc JSDoc comments
+  db.js            # SQLite database connection, table creation, and seed
   package.json     # Dependencies and scripts
-  .gitignore
+  .gitignore       # Ignores node_modules, .env, tasks.db
   README.md
+  Screenshot_20.png  # Swagger UI screenshot
+  Screenshot_1.png   # DB Browser screenshot
   ai/              # AI-generated version (FastAPI)
 ```
 
