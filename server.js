@@ -507,6 +507,8 @@ init()
     });
   })
   .catch((err) => {
-    console.error('Failed to initialize database:', err.message);
-    process.exit(1);
+    console.warn('Warning: Database unavailable — task routes will fail:', err.message);
+    app.listen(PORT, () => {
+      console.log(`Server running at http://localhost:${PORT} (no database)`);
+    });
   });
