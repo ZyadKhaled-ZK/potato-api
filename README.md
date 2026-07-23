@@ -1,14 +1,10 @@
 # Potato API
 
-A simple RESTful API for task management built with Node.js, Express, and SQLite.
+A simple RESTful API for task management built with Node.js, Express, and PostgreSQL — running in Docker.
 
-Built for the FlyRank Internship — Backend Track — Week 3 — Assignment A2.
+Built for the FlyRank Internship — Backend Track — Week 1 — Assignment A3.
 
-Data persists in a SQLite database (`tasks.db`). Restart the server — your tasks are still there.
-
-## Why SQLite?
-
-SQLite is a serverless, zero-config database that lives in a single file. No installation, no running process, no configuration. It's perfect for small projects and learning — your entire database is just `tasks.db`. Real applications often start with SQLite and graduate to Postgres when they need concurrent writes.
+Three storage engines, one API: memory (A1) → SQLite (A2) → PostgreSQL in Docker (A3). Same endpoints, same responses — only the storage layer changed.
 
 ## Quick Start
 
@@ -17,27 +13,37 @@ SQLite is a serverless, zero-config database that lives in a single file. No ins
 git clone https://github.com/ZyadKhaled-ZK/potato-api.git
 cd potato-api
 
-# 2. Install dependencies
-npm install
+# 2. Copy environment file
+cp .env.example .env
 
-# 3. Start the server
-node server.js
+# 3. Start everything (app + database)
+docker compose up
 ```
 
-The server runs at `http://localhost:3000`. Open `http://localhost:3000/docs` for Swagger UI.
+The API runs at `http://localhost:3000`. Swagger UI at `http://localhost:3000/docs`.
 
-The database file `tasks.db` is created automatically on first run with 3 seeded tasks.
+**Requirements:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) (free for personal use)
 
-## Prerequisites
+## How It Works
 
-- [Node.js](https://nodejs.org/) v18 or higher
+```
+Client → Express API (port 3000) → PostgreSQL (port 5432, in Docker container)
+```
+
+- **Docker** packages your app and database into containers — identical behavior on every machine.
+- **A volume** (`taskdata`) keeps your rows alive across `docker compose down` / `up` cycles.
+- **`.env`** holds your database URL — never committed to Git.
+
+## Why PostgreSQL?
+
+PostgreSQL is a powerful, free, open-source database server — the engine behind a huge share of real backends. Unlike SQLite (a file), Postgres runs as its own program, supporting concurrent connections, advanced queries, and production workloads. Docker makes it trivial to run locally.
 
 ## Endpoints
 
 | Method   | Endpoint      | Description                              | Body                          | Status Codes         |
 |----------|---------------|------------------------------------------|-------------------------------|----------------------|
 | `GET`    | `/`           | API info                                 | -                             | 200                  |
-| `GET`    | `/health`     | Health check                             | -                             | 200                  |
+| `GET`    | `/health`     | Health check (pings DB)                  | -                             | 200, 503             |
 | `GET`    | `/tasks`      | List tasks (`?done=`, `?search=`, `?sort=`, `?limit=`, `?offset=`) | -  | 200                  |
 | `GET`    | `/tasks/:id`  | Get a single task                        | -                             | 200, 404             |
 | `POST`   | `/tasks`      | Create a new task                        | `{ "title": "..." }`          | 201, 400             |
@@ -60,7 +66,7 @@ curl -i http://localhost:3000/tasks
 HTTP/1.1 200 OK
 Content-Type: application/json
 
-{"total":3,"count":3,"offset":0,"limit":3,"tasks":[{"id":1,"title":"Install tools","done":true},{"id":2,"title":"Build REST API","done":false},{"id":3,"title":"Write tests","done":false}]}
+{"total":3,"count":3,"offset":0,"limit":3,"tasks":[{"id":1,"title":"Install tools","done":true,"created_at":"...","updated_at":"..."},{"id":2,"title":"Build REST API","done":false,...},{"id":3,"title":"Write tests","done":false,...}]}
 ```
 
 ### Get a single task
@@ -71,9 +77,8 @@ curl -i http://localhost:3000/tasks/1
 
 ```
 HTTP/1.1 200 OK
-Content-Type: application/json
 
-{"id":1,"title":"Install tools","done":true}
+{"id":1,"title":"Install tools","done":true,"created_at":"...","updated_at":"..."}
 ```
 
 ### Create a task
@@ -86,9 +91,8 @@ curl -i -X POST http://localhost:3000/tasks \
 
 ```
 HTTP/1.1 201 Created
-Content-Type: application/json
 
-{"id":4,"title":"Learn Docker","done":false}
+{"id":4,"title":"Learn Docker","done":false,"created_at":"...","updated_at":"..."}
 ```
 
 ### Update a task
@@ -101,9 +105,8 @@ curl -i -X PUT http://localhost:3000/tasks/2 \
 
 ```
 HTTP/1.1 200 OK
-Content-Type: application/json
 
-{"id":2,"title":"Build REST API","done":true}
+{"id":2,"title":"Build REST API","done":true,"created_at":"...","updated_at":"..."}
 ```
 
 ### Delete a task
@@ -116,6 +119,18 @@ curl -i -X DELETE http://localhost:3000/tasks/3
 HTTP/1.1 204 No Content
 ```
 
+### Health check (with DB ping)
+
+```bash
+curl -i http://localhost:3000/health
+```
+
+```
+HTTP/1.1 200 OK
+
+{"status":"ok","db":"ok"}
+```
+
 ### Validation error
 
 ```bash
@@ -126,107 +141,44 @@ curl -i -X POST http://localhost:3000/tasks \
 
 ```
 HTTP/1.1 400 Bad Request
-Content-Type: application/json
 
 {"error":"Title is required"}
 ```
 
-### Task not found
-
-```bash
-curl -i http://localhost:3000/tasks/99
-```
-
-```
-HTTP/1.1 404 Not Found
-Content-Type: application/json
-
-{"error":"Task not found"}
-```
-
-### Pagination
-
-```bash
-curl -i "http://localhost:3000/tasks?limit=2&offset=1"
-```
-
-```
-HTTP/1.1 200 OK
-Content-Type: application/json
-
-{"total":3,"count":2,"offset":1,"limit":2,"tasks":[{"id":2,"title":"Build REST API","done":false},{"id":3,"title":"Write tests","done":false}]}
-```
-
-Real APIs never return everything by default — pagination prevents overloading the client with massive datasets.
-
 ## Persistence Proof
 
-1. Create a task: `POST /tasks {"title":"Survives restart"}`
-2. Restart the server (`Ctrl+C` then `node server.js`)
-3. `GET /tasks` — the task is still there
+```bash
+# Create a task
+curl -X POST http://localhost:3000/tasks -H "Content-Type: application/json" -d '{"title":"Survives restart"}'
 
-This is the key difference from Week 2. Data now lives in `tasks.db` on disk, not in a JavaScript variable in memory.
+# Stop everything
+docker compose down
 
-## The Database
+# Start everything — data survives because of the volume
+docker compose up
 
-`tasks.db` is a SQLite database with one table:
-
-```sql
-CREATE TABLE tasks (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  title TEXT NOT NULL,
-  done INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE INDEX idx_tasks_title ON tasks(title);
+# Task is still there
+curl http://localhost:3000/tasks
 ```
 
-The file is created automatically on first run and is git-ignored so each clone starts fresh with 3 seeded tasks.
+## Database Screenshot
 
-**Why an index?** The `idx_tasks_title` index on the `title` column speeds up `LIKE` searches (`?search=`). Without it, SQLite scans every row; with it, lookups are near-instant.
+Connect to Postgres inside the container:
 
-**Why transactions?** The seed runs inside a `db.transaction()` — if any insert fails, none of them commit. This is all-or-nothing: either all 3 tasks appear, or none do. Transactions prevent partial seeds on crash.
-
-### Example SQL Queries (run in DB Browser)
+```bash
+docker exec -it potato-db-1 psql -U postgres -d tasks
+```
 
 ```sql
--- List every task
+\t
 SELECT * FROM tasks;
-
--- Only completed tasks
-SELECT * FROM tasks WHERE done = 1;
-
--- How many tasks?
-SELECT COUNT(*) FROM tasks;
-
--- Search by title
-SELECT * FROM tasks WHERE title LIKE '%milk%';
-
--- Mark every task as done
-UPDATE tasks SET done = 1;
 ```
 
-After running `UPDATE tasks SET done = 1` in DB Browser, call `GET /tasks` from the API — the change appears instantly. There is no "syncing"; both tools read the same `tasks.db` file.
-
-![DB Browser](./Screenshot_1.png)
-
-## Swagger UI
-
-Interactive API documentation is available at:
-
-```
-http://localhost:3000/docs
-```
-
-You can test every endpoint directly from the browser using the **Try it out** button.
-
-![Swagger UI](./Screenshot_20.png)
+![Postgres Screenshot](./Screenshot_db.png)
 
 ## API Did Not Change
 
-The same A1 curl tests pass against the SQLite version:
+The same A1/A2 curl tests pass against Postgres — identical behavior across three storage engines proves storage is "just an implementation detail":
 
 ```bash
 curl -i http://localhost:3000/tasks          # 200 + three tasks
@@ -235,93 +187,74 @@ curl -i http://localhost:3000/tasks/99       # 404
 curl -i -X POST http://localhost:3000/tasks \
   -H "Content-Type: application/json" \
   -d '{"title":"Test"}'                      # 201
-curl -i -X POST http://localhost:3000/tasks \
-  -H "Content-Type: application/json" \
-  -d '{}'                                    # 400
 curl -i -X DELETE http://localhost:3000/tasks/1  # 204
 ```
 
-Identical tests passing is the proof that storage is "just an implementation detail" — the API is the promise, the database is where the promise is kept.
+## Swagger UI
 
-## AI vs Me (Week 2)
+Interactive API documentation at `http://localhost:3000/docs`.
 
-### My Prompt
+![Swagger UI](./Screenshot_20.png)
 
-> Build a REST API with Python and FastAPI that manages a to-do list. It should have
-> these endpoints: GET / returning API info, GET /health, GET /tasks (with filtering by
-> done status and text search), GET /tasks/{id}, POST /tasks with validation (empty title
-> → 400), PUT /tasks/{id}, DELETE /tasks/{id} (204), GET /stats, POST /reset. All data
-> in memory, no database. Swagger UI should work at /docs.
+## Environment Variables
 
-### What the AI Did Better
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `DATABASE_URL` | Postgres connection string | `postgres://postgres:dev@localhost:5432/tasks` |
 
-- Used Pydantic models for automatic request validation (cleaner than manual checks).
-- Custom exception handlers to normalize all errors to `{ "error": "..." }` — mine sometimes returns different shapes.
-- Added `summary` and `description` on every route — Swagger UI looks more polished.
-
-### What It Got Wrong or Ignored
-
-- Used `global` keyword for `tasks` and `next_id` — works but is not ideal Python practice.
-- Missing pagination (`?limit=&offset=`) — I had to add it myself.
-- Returns 422 (FastAPI default) for validation errors instead of 400 — I had to write a custom handler to fix this.
-
-### What My Prompt Forgot
-
-- Didn't specify pagination — the AI silently decided not to include it.
-- Didn't specify error response shape (`{ "error": "..." }`) — the AI chose it, which happened to match.
-- Didn't mention CORS or deployment — the AI correctly ignored both (not needed for this assignment).
-
-### Second Prompt Change
-
-Added explicit requirements for pagination, error response format, and status code 400 for validation errors. The second version was closer to my hand-built API.
-
-## AI vs Me (Week 3 — Memory → SQLite Migration)
-
-### My Prompt
-
-> Move an in-memory CRUD task API to SQLite. Use better-sqlite3 (Node.js). Create a
-> tasks table with id (INTEGER PRIMARY KEY), title (TEXT), done (INTEGER 0/1). Create
-> the table if it doesn't exist. Seed 3 example tasks only when the table is empty
-> (COUNT check). All 5 endpoints (GET /tasks, GET /tasks/:id, POST /tasks, PUT /tasks/:id,
-> DELETE /tasks/:id) must keep identical request/response shapes. Use parameterized
-> queries (? placeholders) for all user input. POST returns 201, DELETE returns 204.
-> Empty title → 400, unknown id → 404. Data must survive a server restart.
-
-### What the AI Did Better
-
-- Wrapped seeding in a transaction automatically — cleaner than my first attempt.
-- Used `RETURNING *` in PostgreSQL style (would need adaptation for SQLite).
-- Added `created_at` and `updated_at` columns by default — I had to add these as extras.
-
-### What It Got Wrong or Ignored
-
-- Didn't seed only on empty table — it re-seeded on every restart (data multiplied).
-- Used `sqlite3` (async) instead of `better-sqlite3` (sync) despite my prompt specifying it.
-- Changed the response shape — returned `done` as `0`/`1` instead of `true`/`false`.
-
-### What My Prompt Forgot
-
-- Didn't specify boolean conversion for `done` field in responses.
-- Didn't mention WAL mode for better concurrency.
-- Didn't specify the index on `title` for search performance.
-
-### Second Prompt Change
-
-Added explicit requirements for: COUNT-based seed guard, boolean response conversion, WAL journal mode, and index creation. The second version matched my hand-built implementation.
+See `.env.example` for all required variables.
 
 ## Project Structure
 
 ```
 potato-api/
-  server.js        # Express app with all routes + swagger-jsdoc JSDoc comments
-  db.js            # SQLite database connection, table creation, and seed
-  package.json     # Dependencies and scripts
-  .gitignore       # Ignores node_modules, .env, tasks.db
+  server.js         # Express app with all routes
+  db.js             # PostgreSQL connection, table creation, seed
+  Dockerfile        # App container image
+  compose.yaml      # App + Postgres stack
+  .env.example      # Template for secrets (committed)
+  .env              # Real secrets (git-ignored)
+  .dockerignore     # Files excluded from Docker build
+  package.json
+  .gitignore
   README.md
-  Screenshot_20.png  # Swagger UI screenshot
-  Screenshot_1.png   # DB Browser screenshot
-  ai/              # AI-generated version (FastAPI)
+  ai/               # AI-generated version
 ```
+
+## AI vs Me (Week 3 — Docker + Postgres Migration)
+
+### My Prompt
+
+> Containerize a Node.js Express CRUD API with PostgreSQL in Docker. Use pg (node-postgres)
+> driver. Create a tasks table with id SERIAL PRIMARY KEY, title TEXT, done BOOLEAN,
+> created_at TIMESTAMPTZ, updated_at TIMESTAMPTZ. Create table if missing, seed 3 tasks
+> only when empty. All 5 CRUD endpoints keep identical shapes. Use parameterized queries
+> ($1, $2 placeholders). Connection string from .env (DATABASE_URL), never hardcoded.
+> Docker compose with two services: api (built from Dockerfile) and db (postgres image).
+> Volume for data persistence. Health check endpoint that pings the database. One command:
+> docker compose up.
+
+### What the AI Did Better
+
+- Added `depends_on` with `condition: service_healthy` — waits for Postgres to be ready before starting the app.
+- Included a proper healthcheck in compose.yaml for the db service.
+- Used `RETURNING *` in INSERT — cleaner than a separate SELECT after insert.
+
+### What It Got Wrong or Ignored
+
+- Hardcoded the password in compose.yaml instead of reading from .env file.
+- Missing `.dockerignore` — would copy node_modules into the image.
+- Used `restart: always` instead of `restart: unless-stopped` — unnecessary for development.
+
+### What My Prompt Forgot
+
+- Didn't specify `.dockerignore` — the AI silently added it.
+- Didn't mention `depends_on` conditions — the AI chose `service_healthy` which is better than just `service_started`.
+- Didn't specify multi-stage build — the AI used a single stage (acceptable for this assignment).
+
+### Second Prompt Change
+
+Added requirements for: .dockerignore, depends_on with health condition, .env-based configuration inside compose, and restart policy. The second version matched my hand-built implementation.
 
 ## License
 
