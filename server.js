@@ -4,6 +4,7 @@ const swaggerUi = require('swagger-ui-express');
 const swaggerJsdoc = require('swagger-jsdoc');
 const pkg = require('./package.json');
 const { pool, init } = require('./db');
+const supabase = require('./supabase');
 
 const app = express();
 app.use(express.json());
@@ -14,9 +15,19 @@ const swaggerSpec = swaggerJsdoc({
     info: {
       title: pkg.name,
       version: pkg.version,
-      description: 'A simple RESTful Tasks API built with Node.js, Express, and PostgreSQL.',
+      description: 'A simple RESTful Tasks API built with Node.js, Express, and PostgreSQL with Supabase Auth.',
     },
     servers: [{ url: 'http://localhost:3000' }],
+    components: {
+      securitySchemes: {
+        bearerAuth: {
+          type: 'http',
+          scheme: 'bearer',
+          bearerFormat: 'JWT',
+          description: 'Supabase access token',
+        },
+      },
+    },
   },
   apis: ['./server.js'],
 });
@@ -30,6 +41,177 @@ function toBool(task) {
 function toBoolAll(tasks) {
   return tasks.map(toBool);
 }
+
+async function verifyToken(req, res, next) {
+  const header = req.headers.authorization;
+  if (!header || !header.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Missing or invalid Authorization header' });
+  }
+  const token = header.split(' ')[1];
+  const { data, error } = await supabase.auth.getUser(token);
+  if (error || !data.user) {
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  }
+  req.user = data.user;
+  next();
+}
+
+/**
+ * @openapi
+ * /auth/signup:
+ *   post:
+ *     summary: Sign up a new user
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [email, password]
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 example: user@example.com
+ *               password:
+ *                 type: string
+ *                 example: secret123
+ *     responses:
+ *       201:
+ *         description: User created, returns access token
+ *       400:
+ *         description: Invalid input
+ *       409:
+ *         description: User already exists
+ */
+app.post('/auth/signup', async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required' });
+  }
+  const { data, error } = await supabase.auth.signUp({ email, password });
+  if (error) {
+    const status = error.message.includes('already') ? 409 : 400;
+    return res.status(status).json({ error: error.message });
+  }
+  res.status(201).json({
+    user: { id: data.user.id, email: data.user.email },
+    access_token: data.session?.access_token,
+  });
+});
+
+/**
+ * @openapi
+ * /auth/login:
+ *   post:
+ *     summary: Log in with email and password
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [email, password]
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 example: user@example.com
+ *               password:
+ *                 type: string
+ *                 example: secret123
+ *     responses:
+ *       200:
+ *         description: Login successful, returns access token
+ *       400:
+ *         description: Invalid credentials
+ */
+app.post('/auth/login', async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required' });
+  }
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error) {
+    return res.status(400).json({ error: error.message });
+  }
+  res.json({
+    user: { id: data.user.id, email: data.user.email },
+    access_token: data.session.access_token,
+  });
+});
+
+/**
+ * @openapi
+ * /auth/logout:
+ *   post:
+ *     summary: Log out the current user
+ *     tags: [Auth]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Logged out successfully
+ *       401:
+ *         description: Not authenticated
+ */
+app.post('/auth/logout', verifyToken, async (req, res) => {
+  const { error } = await supabase.auth.admin.signOut(req.headers.authorization.split(' ')[1]);
+  if (error) {
+    return res.status(500).json({ error: error.message });
+  }
+  res.json({ message: 'Logged out successfully' });
+});
+
+/**
+ * @openapi
+ * /public/info:
+ *   get:
+ *     summary: Public endpoint (no auth needed)
+ *     tags: [Public]
+ *     responses:
+ *       200:
+ *         description: Public info
+ */
+app.get('/public/info', (req, res) => {
+  res.json({ message: 'This is a public endpoint — no authentication required.' });
+});
+
+/**
+ * @openapi
+ * /protected/profile:
+ *   get:
+ *     summary: Get the authenticated user's profile
+ *     tags: [Protected]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: User profile
+ *       401:
+ *         description: Not authenticated
+ */
+app.get('/protected/profile', verifyToken, (req, res) => {
+  res.json({ user: { id: req.user.id, email: req.user.email, role: req.user.role } });
+});
+
+/**
+ * @openapi
+ * /protected/dashboard:
+ *   get:
+ *     summary: Protected dashboard (requires valid token)
+ *     tags: [Protected]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Dashboard data
+ *       401:
+ *         description: Not authenticated
+ */
+app.get('/protected/dashboard', verifyToken, (req, res) => {
+  res.json({ message: `Welcome, ${req.user.email}! This is your protected dashboard.` });
+});
 
 /**
  * @openapi
@@ -45,7 +227,7 @@ app.get('/', (req, res) => {
   res.json({
     name: pkg.name,
     version: pkg.version,
-    endpoints: ['/', '/health', '/tasks', '/tasks/:id', '/stats', '/reset'],
+    endpoints: ['/', '/health', '/tasks', '/tasks/:id', '/stats', '/reset', '/auth/signup', '/auth/login', '/auth/logout', '/public/info', '/protected/profile', '/protected/dashboard'],
   });
 });
 
@@ -102,7 +284,7 @@ app.get('/health', async (req, res) => {
  *         schema:
  *           type: string
  *           enum: [id, title, created_at]
- *         description: Sort results by field (default: id)
+ *         description: "Sort results by field (default: id)"
  *     responses:
  *       200:
  *         description: List of tasks with pagination info
