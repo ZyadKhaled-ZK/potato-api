@@ -26,7 +26,7 @@ const stmts = {
   all: db.prepare('SELECT * FROM tasks ORDER BY id'),
   byId: db.prepare('SELECT * FROM tasks WHERE id = ?'),
   insert: db.prepare('INSERT INTO tasks (title, done) VALUES (?, ?)'),
-  update: db.prepare('UPDATE tasks SET title = ?, done = ? WHERE id = ?'),
+  update: db.prepare("UPDATE tasks SET title = ?, done = ?, updated_at = datetime('now') WHERE id = ?"),
   delete: db.prepare('DELETE FROM tasks WHERE id = ?'),
   count: db.prepare('SELECT COUNT(*) AS n FROM tasks'),
   countDone: db.prepare('SELECT COUNT(*) AS n FROM tasks WHERE done = 1'),
@@ -101,6 +101,12 @@ app.get('/health', (req, res) => {
  *         schema:
  *           type: integer
  *         description: Number of tasks to skip
+ *       - in: query
+ *         name: sort
+ *         schema:
+ *           type: string
+ *           enum: [id, title, created_at]
+ *         description: Sort results by field (default: id)
  *     responses:
  *       200:
  *         description: List of tasks with pagination info
@@ -121,9 +127,10 @@ app.get('/tasks', (req, res) => {
   const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const total = db.prepare(`SELECT COUNT(*) AS n FROM tasks ${whereClause}`).get(...params).n;
 
+  const sortField = ['id', 'title', 'created_at'].includes(req.query.sort) ? req.query.sort : 'id';
   const limit = req.query.limit ? Number(req.query.limit) : total;
   const offset = req.query.offset ? Number(req.query.offset) : 0;
-  const tasks = db.prepare(`SELECT * FROM tasks ${whereClause} ORDER BY id LIMIT ? OFFSET ?`).all(...params, limit, offset);
+  const tasks = db.prepare(`SELECT * FROM tasks ${whereClause} ORDER BY ${sortField} LIMIT ? OFFSET ?`).all(...params, limit, offset);
 
   res.json({ total, count: tasks.length, offset, limit, tasks: toBoolAll(tasks) });
 });
