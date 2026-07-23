@@ -1,10 +1,55 @@
-# Potato API
+# Potato Widget Platform
 
-A simple RESTful API for task management built with Node.js, Express, and PostgreSQL — running in Docker — with Supabase Auth.
+An embeddable widget & lead-capture platform. Customers define widgets via an authenticated admin API, get a one-line `<script>` snippet, drop it on any external website, and submissions flow back — captured, enriched with IP→geo data, spam-filtered, and dashboarded.
 
-Built for the FlyRank Internship — Backend Track — Week 2 — Assignment A4.
+Built for the FlyRank Internship — Backend Track — Week 9 — Capstone.
 
-Three storage engines, one API: memory (A1) → SQLite (A2) → PostgreSQL in Docker (A3). Same endpoints, same responses — only the storage layer changed. Now with Supabase Auth (A4) protecting selected routes.
+## Architecture
+
+```
+owner (authed) ─► CRUD /api/widgets ─► widgets (tenant-isolated) ─► embed snippet
+
+customer site ──<script src=host/widget.js>──► GET /api/widgets/:id/config (cached, CORS) ─► render
+
+visitor submits ─CORS POST /api/submissions─► validate ─► rate-limit/spam ─► enrich(IP→geo, fallback) ─► store ─► (safe side effect)
+
+owner dashboard (authed) ◄── submissions + stats
+```
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     Potato Widget Platform                       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌──────────┐    ┌──────────────┐    ┌───────────────────┐     │
+│  │  Owner   │───►│  Admin API   │───►│  widgets table    │     │
+│  │ (authed) │    │ /api/widgets  │    │ (tenant-isolated) │     │
+│  └──────────┘    └──────────────┘    └─────────┬─────────┘     │
+│                     │ snippet                   │                │
+│                     ▼                           ▼                │
+│  ┌──────────┐    ┌──────────────┐    ┌───────────────────┐     │
+│  │ Customer │◄───│  widget.js   │◄───│ /api/widgets/:id  │     │
+│  │   Site   │    │ (embed script)│    │   /config (cached) │     │
+│  └────┬─────┘    └──────────────┘    └───────────────────┘     │
+│       │ submit                                                 │
+│       ▼                                                        │
+│  ┌──────────────────────────────────────────────────────┐     │
+│  │  POST /api/submissions (public, CORS)                │     │
+│  │  1. Validate input                                   │     │
+│  │  2. Rate limit (per IP/widget)                       │     │
+│  │  3. Spam filter (honeypot + heuristic)               │     │
+│  │  4. IP→Geo enrichment (3-provider fallback chain)    │     │
+│  │  5. Store in submissions table                       │     │
+│  │  6. Safe side effects (webhook/email — non-fatal)    │     │
+│  └──────────────────────────────────────────────────────┘     │
+│       │                                                        │
+│       ▼                                                        │
+│  ┌──────────┐    ┌──────────────────────────────┐             │
+│  │ Dashboard │◄───│ /api/dashboard/submissions    │             │
+│  │ (authed) │    │ /api/dashboard/stats          │             │
+│  └──────────┘    └──────────────────────────────┘             │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ## Quick Start
 
@@ -13,320 +58,260 @@ Three storage engines, one API: memory (A1) → SQLite (A2) → PostgreSQL in Do
 git clone https://github.com/ZyadKhaled-ZK/potato-api.git
 cd potato-api
 
-# 2. Copy environment file and add your Supabase credentials
+# 2. Install dependencies
+npm install
+
+# 3. Copy environment file and add your credentials
 cp .env.example .env
-# Edit .env and fill in SUPABASE_URL and SUPABASE_KEY from your Supabase project
+# Edit .env with your Supabase URL, key, and Postgres connection string
 
-# 3. Start everything (app + database)
-docker compose up
+# 4. Start the server
+npm start
+
+# 5. Open the demo page
+# http://localhost:3000/demo
 ```
 
-The API runs at `http://localhost:3000`. Swagger UI at `http://localhost:3000/docs`.
-
-**Requirements:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) (free for personal use), a [Supabase](https://supabase.com) project (free, no card)
-
-## How It Works
-
-```
-Client → Express API (port 3000) → PostgreSQL (port 5432, in Docker container)
-```
-
-- **Docker** packages your app and database into containers — identical behavior on every machine.
-- **A volume** (`taskdata`) keeps your rows alive across `docker compose down` / `up` cycles.
-- **`.env`** holds your database URL — never committed to Git.
-
-## Why PostgreSQL?
-
-PostgreSQL is a powerful, free, open-source database server — the engine behind a huge share of real backends. Unlike SQLite (a file), Postgres runs as its own program, supporting concurrent connections, advanced queries, and production workloads. Docker makes it trivial to run locally.
+**Requirements:** Node.js 18+, PostgreSQL (or Docker), Supabase project
 
 ## Endpoints
 
-| Method   | Endpoint               | Description                              | Auth      | Body                                | Status Codes         |
-|----------|------------------------|------------------------------------------|-----------|-------------------------------------|----------------------|
-| `GET`    | `/`                    | API info                                 | No        | -                                   | 200                  |
-| `GET`    | `/health`              | Health check (pings DB)                  | No        | -                                   | 200, 503             |
-| `GET`    | `/tasks`               | List tasks (`?done=`, `?search=`, `?sort=`, `?limit=`, `?offset=`) | No | -                | 200                  |
-| `GET`    | `/tasks/:id`           | Get a single task                        | No        | -                                   | 200, 404             |
-| `POST`   | `/tasks`               | Create a new task                        | No        | `{ "title": "..." }`                | 201, 400             |
-| `PUT`    | `/tasks/:id`           | Update a task                            | No        | `{ "title": "...", "done": true }`  | 200, 400, 404        |
-| `DELETE` | `/tasks/:id`           | Delete a task                            | No        | -                                   | 204, 404             |
-| `GET`    | `/stats`               | Task counts (total / done / pending)     | No        | -                                   | 200                  |
-| `POST`   | `/reset`               | Reset tasks to defaults                  | No        | -                                   | 200                  |
-| `POST`   | `/auth/signup`         | Sign up a new user                       | No        | `{ "email": "...", "password": "..." }` | 201, 400, 409   |
-| `POST`   | `/auth/login`          | Log in with email and password           | No        | `{ "email": "...", "password": "..." }` | 200, 400        |
-| `POST`   | `/auth/logout`         | Log out the current user                 | Bearer    | -                                   | 200, 401             |
-| `GET`    | `/public/info`         | Public endpoint (no auth needed)         | No        | -                                   | 200                  |
-| `GET`    | `/protected/profile`   | Get the authenticated user's profile     | Bearer    | -                                   | 200, 401             |
-| `GET`    | `/protected/dashboard` | Protected dashboard (requires valid token) | Bearer  | -                                   | 200, 401             |
+### Auth
 
-Every error response has the shape `{ "error": "..." }`.
+| Method | Endpoint | Description | Body |
+|--------|----------|-------------|------|
+| `POST` | `/auth/signup` | Sign up a new user | `{ "email", "password" }` |
+| `POST` | `/auth/login` | Log in | `{ "email", "password" }` |
+| `POST` | `/auth/logout` | Log out (authed) | — |
 
-## Examples (curl -i)
+### Widgets (authenticated, tenant-isolated)
 
-### List all tasks
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/widgets` | Create a widget |
+| `GET` | `/api/widgets` | List your widgets |
+| `GET` | `/api/widgets/:id` | Get a widget |
+| `PUT` | `/api/widgets/:id` | Update a widget |
+| `DELETE` | `/api/widgets/:id` | Delete a widget |
+| `GET` | `/api/widgets/:id/snippet` | Get embed snippet |
 
-```bash
-curl -i http://localhost:3000/tasks
+### Public (CORS-enabled)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/widgets/:id/config` | Get widget config (cached) |
+| `POST` | `/api/submissions` | Submit a form |
+
+### Dashboard (authenticated)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/dashboard/submissions` | List submissions |
+| `GET` | `/api/dashboard/stats` | Get stats |
+
+### Static
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/widget.js` | Embed script (cached, immutable) |
+| `GET` | `/demo` | Demo customer site |
+| `GET` | `/docs` | Swagger UI |
+
+## Security Features
+
+### CORS
+- Configurable allowed origins via `ALLOWED_ORIGINS` env var
+- Preflight handling for all public endpoints
+- Credentials support for authenticated routes
+
+### Rate Limiting
+- Per IP + widget: 10 requests per minute window
+- Sliding window counter with automatic cleanup
+- Returns `429 Too Many Requests` with honest error message
+
+### Spam Protection
+- **Honeypot field**: Hidden input that bots fill but humans don't
+- **Oversized payload**: Fields > 5000 chars flagged as spam
+- **Link flooding**: 3+ URLs in a single field triggers spam
+- Spam submissions are stored but marked, never silently dropped
+
+### Input Validation
+- Body size limited to 100kb
+- Required fields enforced at the boundary
+- Honest status codes (400, 404, 429, 500)
+
+## IP→Geo Enrichment
+
+3-provider fallback chain:
+
+1. **ipapi** (primary) — `ipapi.co/{ip}/json/`
+2. **ip-api** (fallback) — `ip-api.com/json/{ip}`
+3. **freegeoip** (last resort) — `freegeoip.app/json/{ip}`
+
+Each provider has a 2-second timeout. If provider 1 fails, it tries provider 2, then 3. If all fail, returns `{ country: "Unknown", provider: "none" }`.
+
+```javascript
+// Toggle providers for testing
+const { setProviders, resetProviders } = require('./geo');
+setProviders([{ name: 'mock', fetch: async () => { throw new Error('down'); } }]);
+// Now enrichment returns { provider: 'none' }
+resetProviders(); // back to real providers
 ```
 
-```
-HTTP/1.1 200 OK
-Content-Type: application/json
+## Safe Side Effects
 
-{"total":3,"count":3,"offset":0,"limit":3,"tasks":[{"id":1,"title":"Install tools","done":true,"created_at":"...","updated_at":"..."},{"id":2,"title":"Build REST API","done":false,...},{"id":3,"title":"Write tests","done":false,...}]}
-```
+Webhook and email notifications are non-fatal:
 
-### Get a single task
-
-```bash
-curl -i http://localhost:3000/tasks/1
+```javascript
+processSideEffects(submission, widget).catch(err => {
+  console.warn('Side effect failed (non-fatal):', err.message);
+});
 ```
 
-```
-HTTP/1.1 200 OK
+- If `WEBHOOK_URL` is set, submissions POST to it (5s timeout)
+- If `NOTIFICATION_EMAIL` + `RESEND_API_KEY` are set, sends email notification
+- Neither failure affects the submission response
 
-{"id":1,"title":"Install tools","done":true,"created_at":"...","updated_at":"..."}
-```
+## Embed Script
 
-### Create a task
+One line to add to any site:
 
-```bash
-curl -i -X POST http://localhost:3000/tasks \
-  -H "Content-Type: application/json" \
-  -d '{"title":"Learn Docker"}'
+```html
+<script src="http://localhost:3000/widget.js" data-widget-id="1" data-api-base="http://localhost:3000" async></script>
 ```
 
-```
-HTTP/1.1 201 Created
-
-{"id":4,"title":"Learn Docker","done":false,"created_at":"...","updated_at":"..."}
-```
-
-### Update a task
-
-```bash
-curl -i -X PUT http://localhost:3000/tasks/2 \
-  -H "Content-Type: application/json" \
-  -d '{"done":true}'
-```
-
-```
-HTTP/1.1 200 OK
-
-{"id":2,"title":"Build REST API","done":true,"created_at":"...","updated_at":"..."}
-```
-
-### Delete a task
-
-```bash
-curl -i -X DELETE http://localhost:3000/tasks/3
-```
-
-```
-HTTP/1.1 204 No Content
-```
-
-### Health check (with DB ping)
-
-```bash
-curl -i http://localhost:3000/health
-```
-
-```
-HTTP/1.1 200 OK
-
-{"status":"ok","db":"ok"}
-```
-
-### Validation error
-
-```bash
-curl -i -X POST http://localhost:3000/tasks \
-  -H "Content-Type: application/json" \
-  -d '{}'
-```
-
-```
-HTTP/1.1 400 Bad Request
-
-{"error":"Title is required"}
-```
-
-### Sign up
-
-```bash
-curl -i -X POST http://localhost:3000/auth/signup \
-  -H "Content-Type: application/json" \
-  -d '{"email":"test@example.com","password":"secret123"}'
-```
-
-```
-HTTP/1.1 201 Created
-
-{"user":{"id":"...","email":"test@example.com"},"access_token":"eyJhbG..."}
-```
-
-### Login
-
-```bash
-curl -i -X POST http://localhost:3000/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"test@example.com","password":"secret123"}'
-```
-
-```
-HTTP/1.1 200 OK
-
-{"user":{"id":"...","email":"test@example.com"},"access_token":"eyJhbG..."}
-```
-
-### Access protected route (with token)
-
-```bash
-curl -i http://localhost:3000/protected/profile \
-  -H "Authorization: Bearer eyJhbG..."
-```
-
-```
-HTTP/1.1 200 OK
-
-{"user":{"id":"...","email":"test@example.com","role":"authenticated"}}
-```
-
-### Access protected route (without token)
-
-```bash
-curl -i http://localhost:3000/protected/profile
-```
-
-```
-HTTP/1.1 401 Unauthorized
-
-{"error":"Missing or invalid Authorization header"}
-```
-
-### Logout
-
-```bash
-curl -i -X POST http://localhost:3000/auth/logout \
-  -H "Authorization: Bearer eyJhbG..."
-```
-
-```
-HTTP/1.1 200 OK
-
-{"message":"Logged out successfully"}
-```
-
-## Persistence Proof
-
-```bash
-# Create a task
-curl -X POST http://localhost:3000/tasks -H "Content-Type: application/json" -d '{"title":"Survives restart"}'
-
-# Stop everything
-docker compose down
-
-# Start everything — data survives because of the volume
-docker compose up
-
-# Task is still there
-curl http://localhost:3000/tasks
-```
-
-## Database Screenshot
-
-Connect to Postgres inside the container:
-
-```bash
-docker exec -it potato-db-1 psql -U postgres -d tasks
-```
-
-```sql
-\t
-SELECT * FROM tasks;
-```
-
-![Postgres Screenshot](./Screenshot_db.png)
-
-## API Did Not Change
-
-The same A1/A2 curl tests pass against Postgres — identical behavior across three storage engines proves storage is "just an implementation detail":
-
-```bash
-curl -i http://localhost:3000/tasks          # 200 + three tasks
-curl -i http://localhost:3000/tasks/1        # 200 + one task
-curl -i http://localhost:3000/tasks/99       # 404
-curl -i -X POST http://localhost:3000/tasks \
-  -H "Content-Type: application/json" \
-  -d '{"title":"Test"}'                      # 201
-curl -i -X DELETE http://localhost:3000/tasks/1  # 204
-```
-
-## Swagger UI
-
-Interactive API documentation at `http://localhost:3000/docs`.
-
-![Swagger UI](./Screenshot_20.png)
+The script:
+1. Fetches widget config from `/api/widgets/:id/config` (cached, CORS)
+2. Renders a popover/signup/CTA form
+3. Submits data back to `/api/submissions` (CORS)
+4. Shows success/error feedback inline
 
 ## Environment Variables
 
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `DATABASE_URL` | Postgres connection string | `postgres://postgres:dev@localhost:5432/tasks` |
-| `SUPABASE_URL` | Supabase project URL | `https://xxxxx.supabase.co` |
-| `SUPABASE_KEY` | Supabase anon/public key | `eyJhbG...` |
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `DATABASE_URL` | PostgreSQL connection string | Yes |
+| `SUPABASE_URL` | Supabase project URL | Yes |
+| `SUPABASE_KEY` | Supabase anon key | Yes |
+| `ALLOWED_ORIGINS` | Comma-separated CORS origins | No |
+| `WEBHOOK_URL` | Webhook URL for submissions | No |
+| `NOTIFICATION_EMAIL` | Email for notifications | No |
+| `RESEND_API_KEY` | Resend API key for emails | No |
 
-See `.env.example` for all required variables.
+## Database Schema
+
+```sql
+-- Widgets (tenant-isolated)
+CREATE TABLE widgets (
+  id SERIAL PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'popover',
+  title TEXT NOT NULL,
+  description TEXT DEFAULT '',
+  fields JSONB DEFAULT '[]',
+  targeting JSONB DEFAULT '{}',
+  button_text TEXT DEFAULT 'Submit',
+  theme JSONB DEFAULT '{}',
+  is_active BOOLEAN DEFAULT true,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Submissions
+CREATE TABLE submissions (
+  id SERIAL PRIMARY KEY,
+  widget_id INTEGER REFERENCES widgets(id) ON DELETE CASCADE,
+  data JSONB DEFAULT '{}',
+  ip_address TEXT,
+  user_agent TEXT,
+  geo JSONB DEFAULT '{}',
+  is_spam BOOLEAN DEFAULT false,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Rate limits
+CREATE TABLE rate_limits (
+  ip TEXT NOT NULL,
+  widget_id INTEGER NOT NULL,
+  window_start TIMESTAMPTZ DEFAULT now(),
+  count INTEGER DEFAULT 1,
+  PRIMARY KEY (ip, widget_id, window_start)
+);
+```
+
+## Tests
+
+```bash
+npm test
+```
+
+19 tests covering:
+- CORS preflight and headers
+- Input validation (missing fields, empty data)
+- Auth (unauthenticated access blocked)
+- Spam detection (honeypot, oversized payloads)
+- Geo enrichment (local IP, provider fallback)
+- Static assets (widget.js, demo page)
+- Rate limiting (with DB)
+- Health check and API info
 
 ## Project Structure
 
 ```
 potato-api/
-  server.js         # Express app with all routes + auth
-  db.js             # PostgreSQL connection, table creation, seed
-  supabase.js       # Supabase client initialization
-  Dockerfile        # App container image
-  compose.yaml      # App + Postgres stack
-  .env.example      # Template for secrets (committed)
-  .env              # Real secrets (git-ignored)
-  .dockerignore     # Files excluded from Docker build
+  server.js           # Express app — all routes + CORS + widget platform
+  db.js               # PostgreSQL connection + schema (tasks, widgets, submissions, rate_limits)
+  geo.js              # IP→Geo enrichment with 3-provider fallback chain
+  spam.js             # Rate limiter + spam detection (honeypot, heuristic)
+  supabase.js         # Supabase client initialization
+  test.js             # 19 tests (CORS, validation, spam, geo, auth, rate-limit)
+  public/
+    widget.js         # Embeddable script (cross-origin, renders form, submits data)
+    customer-site.html # Demo "customer site" with widget embedded
+  Dockerfile          # Container image
+  compose.yaml        # App + Postgres stack
+  .env.example        # Template for secrets
+  .env                # Real secrets (git-ignored)
   package.json
-  .gitignore
   README.md
-  ai/               # AI-generated version
 ```
 
-## AI vs Me (Week 2 — Auth with Supabase)
+## AI vs Me (Week 9 — Capstone)
 
 ### My Prompt
 
-> Add Supabase Auth to the existing Express API. Use @supabase/supabase-js client.
-> Create routes: POST /auth/signup, POST /auth/login, POST /auth/logout, GET /public/info,
-> GET /protected/profile, GET /protected/dashboard. Verify tokens via supabase.auth.getUser().
-> Use bearer token in Authorization header. Swagger UI with bearer auth security scheme.
-> All new auth routes documented with JSDoc @openapi annotations. Keep existing CRUD routes unchanged.
+> Build an embeddable widget platform with Express. Widget CRUD with tenant isolation
+> via Supabase Auth. Public embed script that fetches config and renders on any origin.
+> CORS on all public endpoints. Submission endpoint with input validation, rate limiting
+> per IP/widget (10/min), honeypot spam detection, and IP→geo enrichment with 3-provider
+> fallback chain (ipapi, ip-api, freegeoip). Safe side effects — webhook/email that don't
+> fail the submission. Cached config delivery with cache headers. Dashboard with stats.
+> 19 tests covering CORS, validation, spam, geo, auth, rate-limit.
 
 ### What the AI Did Better
 
-- Added `tags: [Auth]` / `[Protected]` / `[Public]` in Swagger — groups endpoints nicely.
-- Created a separate `supabase.js` module for clean client initialization.
-- Used `verifyToken` middleware consistently across all protected routes.
+- Generated a full embed script with themed UI (positioning, colors, responsive design)
+- Added `stale-while-revalidate` cache header for config — serves stale while refreshing
+- Created a comprehensive test suite with graceful DB-unavailable handling
+- Added automatic rate limit cleanup via `setInterval`
 
 ### What It Got Wrong or Ignored
 
-- Didn't ask for an `.env.example` update — I had to add `SUPABASE_URL` and `SUPABASE_KEY` manually.
-- YAML parsing error in existing JSDoc comment (`description: Sort results by field (default: id)`) — the colon broke the YAML parser. Had to quote it.
+- Initial package.json had syntax error (extra closing brace)
+- Server crashed on DB errors without try/catch — had to add error handling manually
+- Embed script had syntax error (`field honeypot` instead of `field.honeypot`)
+- Didn't handle Express 5 async error propagation (v5 doesn't auto-catch)
 
 ### What My Prompt Forgot
 
-- Didn't specify how logout should work (admin signOut vs client signOut) — the AI chose `admin.signOut` which requires a service key. For client-side apps, `supabase.auth.signOut()` is sufficient.
-- Didn't mention Swagger tags — the AI added them anyway.
-- Didn't mention `.env.example` update — the AI missed it initially.
+- Didn't specify Express version compatibility (v5 async behavior differs from v4)
+- Didn't mention stale-while-revalidate or ETag headers
+- Didn't specify rate limit cleanup strategy
+- Didn't mention body size limits
 
 ### Second Prompt Change
 
-Added requirements for: .env.example update with SUPABASE_URL and SUPABASE_KEY, quoted YAML descriptions, and client-side logout via `supabase.auth.signOut()` instead of admin signOut. The second version matched my hand-built implementation.
+Added requirements for: try/catch on all DB-dependent routes, body size limit (100kb), rate limit cleanup interval, and Express 5 async error handling. The second version matched my hand-built implementation.
 
 ## License
 

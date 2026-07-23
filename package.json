@@ -1,21 +1,22 @@
 {
   "name": "potato",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "version": "2.0.0",
+  "description": "Embeddable widget & lead-capture platform with geo enrichment and spam protection",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node server.js",
+    "test": "node test.js"
   },
-  "keywords": [],
+  "keywords": ["widget", "embed", "lead-capture", "geo-enrichment"],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "@supabase/supabase-js": "^2.110.8",
     "better-sqlite3": "^13.0.1",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "pg": "^8.22.0",
+    "@supabase/supabase-js": "^2.52.1",
     "swagger-jsdoc": "^6.3.0",
     "swagger-ui-express": "^5.0.1"
   }
