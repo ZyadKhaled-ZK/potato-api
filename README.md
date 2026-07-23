@@ -38,7 +38,7 @@ The database file `tasks.db` is created automatically on first run with 3 seeded
 |----------|---------------|------------------------------------------|-------------------------------|----------------------|
 | `GET`    | `/`           | API info                                 | -                             | 200                  |
 | `GET`    | `/health`     | Health check                             | -                             | 200                  |
-| `GET`    | `/tasks`      | List tasks (`?done=`, `?search=`, `?limit=`, `?offset=`) | -     | 200                  |
+| `GET`    | `/tasks`      | List tasks (`?done=`, `?search=`, `?sort=`, `?limit=`, `?offset=`) | -  | 200                  |
 | `GET`    | `/tasks/:id`  | Get a single task                        | -                             | 200, 404             |
 | `POST`   | `/tasks`      | Create a new task                        | `{ "title": "..." }`          | 201, 400             |
 | `PUT`    | `/tasks/:id`  | Update a task                            | `{ "title": "...", "done": }` | 200, 400, 404        |
@@ -175,11 +175,19 @@ This is the key difference from Week 2. Data now lives in `tasks.db` on disk, no
 CREATE TABLE tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT NOT NULL,
-  done INTEGER NOT NULL DEFAULT 0
+  done INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE INDEX idx_tasks_title ON tasks(title);
 ```
 
 The file is created automatically on first run and is git-ignored so each clone starts fresh with 3 seeded tasks.
+
+**Why an index?** The `idx_tasks_title` index on the `title` column speeds up `LIKE` searches (`?search=`). Without it, SQLite scans every row; with it, lookups are near-instant.
+
+**Why transactions?** The seed runs inside a `db.transaction()` — if any insert fails, none of them commit. This is all-or-nothing: either all 3 tasks appear, or none do. Transactions prevent partial seeds on crash.
 
 ### Example SQL Queries (run in DB Browser)
 
@@ -266,6 +274,40 @@ Identical tests passing is the proof that storage is "just an implementation det
 ### Second Prompt Change
 
 Added explicit requirements for pagination, error response format, and status code 400 for validation errors. The second version was closer to my hand-built API.
+
+## AI vs Me (Week 3 — Memory → SQLite Migration)
+
+### My Prompt
+
+> Move an in-memory CRUD task API to SQLite. Use better-sqlite3 (Node.js). Create a
+> tasks table with id (INTEGER PRIMARY KEY), title (TEXT), done (INTEGER 0/1). Create
+> the table if it doesn't exist. Seed 3 example tasks only when the table is empty
+> (COUNT check). All 5 endpoints (GET /tasks, GET /tasks/:id, POST /tasks, PUT /tasks/:id,
+> DELETE /tasks/:id) must keep identical request/response shapes. Use parameterized
+> queries (? placeholders) for all user input. POST returns 201, DELETE returns 204.
+> Empty title → 400, unknown id → 404. Data must survive a server restart.
+
+### What the AI Did Better
+
+- Wrapped seeding in a transaction automatically — cleaner than my first attempt.
+- Used `RETURNING *` in PostgreSQL style (would need adaptation for SQLite).
+- Added `created_at` and `updated_at` columns by default — I had to add these as extras.
+
+### What It Got Wrong or Ignored
+
+- Didn't seed only on empty table — it re-seeded on every restart (data multiplied).
+- Used `sqlite3` (async) instead of `better-sqlite3` (sync) despite my prompt specifying it.
+- Changed the response shape — returned `done` as `0`/`1` instead of `true`/`false`.
+
+### What My Prompt Forgot
+
+- Didn't specify boolean conversion for `done` field in responses.
+- Didn't mention WAL mode for better concurrency.
+- Didn't specify the index on `title` for search performance.
+
+### Second Prompt Change
+
+Added explicit requirements for: COUNT-based seed guard, boolean response conversion, WAL journal mode, and index creation. The second version matched my hand-built implementation.
 
 ## Project Structure
 
