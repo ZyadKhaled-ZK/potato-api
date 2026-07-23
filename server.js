@@ -1,8 +1,9 @@
+require('dotenv').config();
 const express = require('express');
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsdoc = require('swagger-jsdoc');
 const pkg = require('./package.json');
-const db = require('./db');
+const { pool, init } = require('./db');
 
 const app = express();
 app.use(express.json());
@@ -13,7 +14,7 @@ const swaggerSpec = swaggerJsdoc({
     info: {
       title: pkg.name,
       version: pkg.version,
-      description: 'A simple RESTful Tasks API built with Node.js, Express, and SQLite.',
+      description: 'A simple RESTful Tasks API built with Node.js, Express, and PostgreSQL.',
     },
     servers: [{ url: 'http://localhost:3000' }],
   },
@@ -21,18 +22,6 @@ const swaggerSpec = swaggerJsdoc({
 });
 
 app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
-
-const stmts = {
-  all: db.prepare('SELECT * FROM tasks ORDER BY id'),
-  byId: db.prepare('SELECT * FROM tasks WHERE id = ?'),
-  insert: db.prepare('INSERT INTO tasks (title, done) VALUES (?, ?)'),
-  update: db.prepare("UPDATE tasks SET title = ?, done = ?, updated_at = datetime('now') WHERE id = ?"),
-  delete: db.prepare('DELETE FROM tasks WHERE id = ?'),
-  count: db.prepare('SELECT COUNT(*) AS n FROM tasks'),
-  countDone: db.prepare('SELECT COUNT(*) AS n FROM tasks WHERE done = 1'),
-  reset: db.prepare('DELETE FROM tasks'),
-  seed: db.prepare('INSERT INTO tasks (title, done) VALUES (?, ?)'),
-};
 
 function toBool(task) {
   return task ? { ...task, done: !!task.done } : null;
@@ -65,13 +54,20 @@ app.get('/', (req, res) => {
  * /health:
  *   get:
  *     summary: Health check
- *     description: Returns ok if the server is alive.
+ *     description: Returns ok if the server is alive. Also pings the database.
  *     responses:
  *       200:
- *         description: Server is healthy
+ *         description: Server and database are healthy
+ *       503:
+ *         description: Database unreachable
  */
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok' });
+app.get('/health', async (req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.json({ status: 'ok', db: 'ok' });
+  } catch {
+    res.status(503).json({ status: 'error', db: 'unreachable' });
+  }
 });
 
 /**
@@ -111,28 +107,33 @@ app.get('/health', (req, res) => {
  *       200:
  *         description: List of tasks with pagination info
  */
-app.get('/tasks', (req, res) => {
+app.get('/tasks', async (req, res) => {
   let where = [];
   let params = [];
+  let paramIndex = 1;
 
   if (req.query.done !== undefined) {
-    where.push('done = ?');
-    params.push(req.query.done === 'true' ? 1 : 0);
+    where.push(`done = $${paramIndex++}`);
+    params.push(req.query.done === 'true');
   }
   if (req.query.search) {
-    where.push('title LIKE ?');
+    where.push(`title ILIKE $${paramIndex++}`);
     params.push(`%${req.query.search}%`);
   }
 
   const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  const total = db.prepare(`SELECT COUNT(*) AS n FROM tasks ${whereClause}`).get(...params).n;
+  const countResult = await pool.query(`SELECT COUNT(*) AS n FROM tasks ${whereClause}`, params);
+  const total = Number(countResult.rows[0].n);
 
   const sortField = ['id', 'title', 'created_at'].includes(req.query.sort) ? req.query.sort : 'id';
   const limit = req.query.limit ? Number(req.query.limit) : total;
   const offset = req.query.offset ? Number(req.query.offset) : 0;
-  const tasks = db.prepare(`SELECT * FROM tasks ${whereClause} ORDER BY ${sortField} LIMIT ? OFFSET ?`).all(...params, limit, offset);
+  const tasksResult = await pool.query(
+    `SELECT * FROM tasks ${whereClause} ORDER BY ${sortField} LIMIT $${paramIndex++} OFFSET $${paramIndex++}`,
+    [...params, limit, offset]
+  );
 
-  res.json({ total, count: tasks.length, offset, limit, tasks: toBoolAll(tasks) });
+  res.json({ total, count: tasksResult.rows.length, offset, limit, tasks: toBoolAll(tasksResult.rows) });
 });
 
 /**
@@ -153,10 +154,10 @@ app.get('/tasks', (req, res) => {
  *       404:
  *         description: Task not found
  */
-app.get('/tasks/:id', (req, res) => {
-  const task = stmts.byId.get(Number(req.params.id));
-  if (!task) return res.status(404).json({ error: 'Task not found' });
-  res.json(toBool(task));
+app.get('/tasks/:id', async (req, res) => {
+  const { rows } = await pool.query('SELECT * FROM tasks WHERE id = $1', [Number(req.params.id)]);
+  if (!rows.length) return res.status(404).json({ error: 'Task not found' });
+  res.json(toBool(rows[0]));
 });
 
 /**
@@ -182,14 +183,16 @@ app.get('/tasks/:id', (req, res) => {
  *       400:
  *         description: Title is required
  */
-app.post('/tasks', (req, res) => {
+app.post('/tasks', async (req, res) => {
   const { title } = req.body;
   if (!title || !title.trim()) {
     return res.status(400).json({ error: 'Title is required' });
   }
-  const result = stmts.insert.run(title.trim(), 0);
-  const task = stmts.byId.get(result.lastInsertRowid);
-  res.status(201).json(toBool(task));
+  const { rows } = await pool.query(
+    'INSERT INTO tasks (title, done) VALUES ($1, $2) RETURNING *',
+    [title.trim(), false]
+  );
+  res.status(201).json(toBool(rows[0]));
 });
 
 /**
@@ -223,17 +226,21 @@ app.post('/tasks', (req, res) => {
  *       404:
  *         description: Task not found
  */
-app.put('/tasks/:id', (req, res) => {
-  const existing = stmts.byId.get(Number(req.params.id));
-  if (!existing) return res.status(404).json({ error: 'Task not found' });
+app.put('/tasks/:id', async (req, res) => {
+  const existing = await pool.query('SELECT * FROM tasks WHERE id = $1', [Number(req.params.id)]);
+  if (!existing.rows.length) return res.status(404).json({ error: 'Task not found' });
+  const current = existing.rows[0];
   const { title, done } = req.body;
   if (title !== undefined && (!title || !title.trim())) {
     return res.status(400).json({ error: 'Title cannot be empty' });
   }
-  const newTitle = title !== undefined ? title.trim() : existing.title;
-  const newDone = done !== undefined ? (done ? 1 : 0) : existing.done;
-  stmts.update.run(newTitle, newDone, existing.id);
-  res.json(toBool(stmts.byId.get(existing.id)));
+  const newTitle = title !== undefined ? title.trim() : current.title;
+  const newDone = done !== undefined ? done : current.done;
+  const { rows } = await pool.query(
+    "UPDATE tasks SET title = $1, done = $2, updated_at = now() WHERE id = $3 RETURNING *",
+    [newTitle, newDone, current.id]
+  );
+  res.json(toBool(rows[0]));
 });
 
 /**
@@ -254,10 +261,10 @@ app.put('/tasks/:id', (req, res) => {
  *       404:
  *         description: Task not found
  */
-app.delete('/tasks/:id', (req, res) => {
-  const existing = stmts.byId.get(Number(req.params.id));
-  if (!existing) return res.status(404).json({ error: 'Task not found' });
-  stmts.delete.run(existing.id);
+app.delete('/tasks/:id', async (req, res) => {
+  const existing = await pool.query('SELECT * FROM tasks WHERE id = $1', [Number(req.params.id)]);
+  if (!existing.rows.length) return res.status(404).json({ error: 'Task not found' });
+  await pool.query('DELETE FROM tasks WHERE id = $1', [existing.rows[0].id]);
   res.status(204).end();
 });
 
@@ -271,10 +278,12 @@ app.delete('/tasks/:id', (req, res) => {
  *       200:
  *         description: Task statistics
  */
-app.get('/stats', (req, res) => {
-  const total = stmts.count.get().n;
-  const done = stmts.countDone.get().n;
-  res.json({ total, done, pending: total - done });
+app.get('/stats', async (req, res) => {
+  const total = await pool.query('SELECT COUNT(*) AS n FROM tasks');
+  const done = await pool.query('SELECT COUNT(*) AS n FROM tasks WHERE done = true');
+  const t = Number(total.rows[0].n);
+  const d = Number(done.rows[0].n);
+  res.json({ total: t, done: d, pending: t - d });
 });
 
 /**
@@ -287,18 +296,35 @@ app.get('/stats', (req, res) => {
  *       200:
  *         description: Tasks reset to defaults
  */
-app.post('/reset', (req, res) => {
-  const resetAll = db.transaction(() => {
-    stmts.reset.run();
-    stmts.seed.run('Install tools', 1);
-    stmts.seed.run('Build REST API', 0);
-    stmts.seed.run('Write tests', 0);
-  });
-  resetAll();
-  const tasks = stmts.all.all();
-  res.json({ message: 'Tasks reset to defaults', tasks: toBoolAll(tasks) });
+app.post('/reset', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM tasks');
+    await client.query(
+      'INSERT INTO tasks (title, done) VALUES ($1, $2), ($3, $4), ($5, $6)',
+      ['Install tools', true, 'Build REST API', false, 'Write tests', false]
+    );
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+  const { rows } = await pool.query('SELECT * FROM tasks ORDER BY id');
+  res.json({ message: 'Tasks reset to defaults', tasks: toBoolAll(rows) });
 });
 
-app.listen(3000, () => {
-  console.log('Server running at http://localhost:3000');
-});
+const PORT = process.env.PORT || 3000;
+
+init()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`Server running at http://localhost:${PORT}`);
+    });
+  })
+  .catch((err) => {
+    console.error('Failed to initialize database:', err.message);
+    process.exit(1);
+  });

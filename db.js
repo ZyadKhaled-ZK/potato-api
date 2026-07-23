@@ -1,33 +1,28 @@
-const Database = require('better-sqlite3');
-const path = require('path');
+require('dotenv').config();
+const { Pool } = require('pg');
 
-const db = new Database(path.join(__dirname, 'tasks.db'));
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
-db.pragma('journal_mode = WAL');
+async function init() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS tasks (
+      id SERIAL PRIMARY KEY,
+      title TEXT NOT NULL,
+      done BOOLEAN NOT NULL DEFAULT false,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS tasks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL,
-    done INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )
-`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_tasks_title ON tasks(title)`);
 
-db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_title ON tasks(title)`);
-
-const count = db.prepare('SELECT COUNT(*) AS n FROM tasks').get().n;
-if (count === 0) {
-  const insert = db.prepare('INSERT INTO tasks (title, done) VALUES (?, ?)');
-  const seed = db.transaction((rows) => {
-    for (const row of rows) insert.run(row.title, row.done);
-  });
-  seed([
-    { title: 'Install tools', done: 1 },
-    { title: 'Build REST API', done: 0 },
-    { title: 'Write tests', done: 0 },
-  ]);
+  const { rows } = await pool.query('SELECT COUNT(*) AS n FROM tasks');
+  if (Number(rows[0].n) === 0) {
+    await pool.query(
+      'INSERT INTO tasks (title, done) VALUES ($1, $2), ($3, $4), ($5, $6)',
+      ['Install tools', true, 'Build REST API', false, 'Write tests', false]
+    );
+  }
 }
 
-module.exports = db;
+module.exports = { pool, init };
